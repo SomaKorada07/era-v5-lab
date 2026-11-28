@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Build rollout_vllm.ipynb (Kaggle or Colab): vLLM as the rollout sampler, W4A16 GPTQ against the vLLM baseline, scored by PyTorch.
 
-    python build_vllm_notebook.py
+    python build_vllm_notebook.py                    # rollout_vllm.ipynb (W4A16; the notebook of the recorded run 1f0a071bc0f2)
+    python build_vllm_notebook.py --scheme W8A16     # rollout_vllm_w8a16.ipynb: the same notebook with 8-bit weights
+
+Rebuilding the default notebook now gives a different version hash than 1f0a071bc0f2 (quantize_w4a16.py gained --scheme);
+that recorded notebook is committed as it was run.
 
 Team 10 asked for the path they would run on a GPU: vLLM sampling a W4A16 (GPTQ) copy, scored against the PyTorch bf16
 reference. The recipe is Team 12's week-2 GPU path (gpu_path/): llm-compressor 0.15.0 GPTQ W4A16 (group 128, lm_head kept
@@ -9,7 +13,7 @@ in bf16) and vLLM 0.33.0, each in its own environment. New here: the sampler sta
 llama.cpp stage), a check for a dense model's packed layers, and the PyTorch scoring stage (score_with_torch.py).
 The notebook embeds its own copy of the code, so it runs without a branch being pushed.
 """
-import hashlib, json
+import argparse, hashlib, json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -213,7 +217,7 @@ print("\\nEverything is in", RUNS, "and", zip_path, "(Kaggle: the version's Outp
 ]
 
 
-def build() -> Path:
+def build(scheme: str = "W4A16") -> Path:
     src = {name: path.read_text() for name, path in SOURCES.items()}
     writer = ["# the code and the 100 fixed prompts, embedded by build_vllm_notebook.py",
               "SOURCES = " + json.dumps(src, ensure_ascii=True, indent=0),
@@ -224,12 +228,17 @@ def build() -> Path:
     cells = [code("\n".join(writer)) if c == "__SOURCE_CELL__" else c for c in CELLS]
     for c in cells:
         c["source"] = [line.replace("__NOTEBOOK_VERSION__", version) for line in c["source"]]
+    if scheme != "W4A16":
+        cells = [c if c["source"][0].startswith("# the code and the 100 fixed prompts") else dict(c, source=[l.replace("W4A16", scheme).replace("--method {METHOD} --model ", f"--method {{METHOD}} --scheme {scheme} --model ") for l in c["source"]]) for c in cells]
+        cells[0]["source"] += ["\n", f"**{scheme} (8-bit weights, group size 128, symmetric) is the 8-bit counterpart of llama.cpp's Q8_0.** It was not run before this notebook. "
+                               "The vLLM kernel for 8-bit weights on a T4 is shown in the sampler log (`logs/sample_vllm_W8A16.log`); if the model does not load there, rerun on an L4 or A100.\n"]
     nb = {"cells": cells, "nbformat": 4, "nbformat_minor": 5,
           "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}, "language_info": {"name": "python"}, "accelerator": "GPU"}}
-    out = HERE / "rollout_vllm.ipynb"
+    out = HERE / ("rollout_vllm.ipynb" if scheme == "W4A16" else f"rollout_vllm_{scheme.lower()}.ipynb")
     out.write_text(json.dumps(nb, indent=1, ensure_ascii=True) + "\n")
     return out
 
 
 if __name__ == "__main__":
-    print("wrote", build())
+    ap = argparse.ArgumentParser(); ap.add_argument("--scheme", choices=["W4A16", "W8A16"], default="W4A16")
+    print("wrote", build(ap.parse_args().scheme))
