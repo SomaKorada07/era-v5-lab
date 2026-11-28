@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Quantize OLMoE to W4A16 with llm-compressor (GPTQ, 4-bit weights, group 128) for vLLM.
 
-    python quantize_w4a16.py --model-dir <bf16 snapshot> --out <out_dir> [--method gptq|rtn]
+    python quantize_w4a16.py --model-dir <bf16 snapshot> --out <out_dir> [--method gptq|rtn] [--scheme W4A16|W8A16]
         [--samples 256] [--seq-len 1024]
 
 Runs in its own environment (llmcompressor brings its own torch and transformers).
+- --scheme W8A16 (default W4A16) makes the weights 8-bit instead: same group size 128, symmetric, same ignore list.
 - Weights of every Linear become 4-bit integers with one scale per 128 inputs (compressed-tensors `pack-quantized`);
   activations stay 16-bit (A16), so it runs on GPUs without FP8 (T4, P100, L4 and A100 all work).
 - `lm_head` and the 16 router gates (`mlp.gate`, OLMoE's module name) are left out and stay BF16 (G12 rule).
@@ -52,6 +53,7 @@ def main() -> None:
     ap.add_argument("--model-dir", required=True, type=Path, help="local bf16 snapshot of the model")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--method", choices=["gptq", "rtn"], default="gptq")
+    ap.add_argument("--scheme", choices=["W4A16", "W8A16"], default="W4A16")
     ap.add_argument("--samples", type=int, default=256)
     ap.add_argument("--seq-len", type=int, default=1024)
     ap.add_argument("--model", default="allenai/OLMoE-1B-7B-0924")
@@ -67,14 +69,14 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(args.model_dir, torch_dtype="auto")
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     if args.method == "gptq":
-        recipe = GPTQModifier(targets="Linear", scheme="W4A16", ignore=IGNORE)
+        recipe = GPTQModifier(targets="Linear", scheme=args.scheme, ignore=IGNORE)
         t = time.perf_counter()
         ds = calibration(tokenizer, args.samples, args.seq_len)
         calib_s = time.perf_counter() - t
         t = time.perf_counter()
         oneshot(model=model, dataset=ds, recipe=recipe, max_seq_length=args.seq_len, num_calibration_samples=len(ds))
     else:
-        recipe = QuantizationModifier(targets="Linear", scheme="W4A16", ignore=IGNORE)
+        recipe = QuantizationModifier(targets="Linear", scheme=args.scheme, ignore=IGNORE)
         calib_s = 0.0
         t = time.perf_counter()
         oneshot(model=model, recipe=recipe)
@@ -84,7 +86,7 @@ def main() -> None:
     model.save_pretrained(args.out, save_compressed=True)
     tokenizer.save_pretrained(args.out)
     meta = {
-        "model": args.model, "revision": args.revision, "method": args.method, "scheme": "W4A16",
+        "model": args.model, "revision": args.revision, "method": args.method, "scheme": args.scheme,
         "group_size": 128, "ignore": IGNORE,
         "calibration": None if args.method == "rtn" else {
             "dataset": "/".join(CALIB), "samples": args.samples, "seq_len": args.seq_len, "prepare_s": round(calib_s, 1)},
