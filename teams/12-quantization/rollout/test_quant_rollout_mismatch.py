@@ -255,3 +255,45 @@ def test_g10_rollout_note_for_a_run_that_did_not_record_its_prompt_selection(tmp
     ns = argparse.Namespace(model="toy", notebook_version="v1", pr_this="a", pr_baseline="b", hardware="Kaggle T4 x2", prompt_note="first 48 of the fixed prompts")
     md = g.render(g.load_llama(d), {**_torch_ref(), "formats": _torch_ref()["formats"][1:2]}, ns)
     assert "first (not recorded)" in md and "composition not recorded" in md and "first 48 of the fixed prompts" in md
+
+
+def test_run_format_records_the_category_in_the_dump(tmp_path):
+    path = tmp_path / "d.jsonl"
+    m.run_format("stub", Stub(1.0), Stub(1.0), [[5, 6, 4], [1, 2]], k=1, max_new=3, eps=0.2, dump_path=path, categories=["code", "indic"])
+    assert [json.loads(x)["category"] for x in path.read_text().splitlines()] == ["code", "indic"]
+
+
+def test_torch_stage_reports_a_breakdown_by_category(toy_hf, tmp_path):
+    torch = pytest.importorskip("torch")
+    import score_with_torch as st
+    model, _ = toy_hf
+    recs = _records_from(model, n=4)
+    for i, r in enumerate(recs):
+        r["category"] = ["code", "indic"][i % 2]
+    per, pos, cl = st.score_records(model, recs, torch.device("cpu"), "float32")
+    cat = per.pop("category")
+    assert set(cat) == {"code", "indic"}
+    sub = {k: v[cat == "code"] for k, v in per.items()}
+    agg = m.aggregate(sub, pos[cat == "code"], clusters=cl[cat == "code"])
+    assert agg["tokens"] == 12 and agg["outside"] == 0                              # 2 rollouts x 6 tokens of an identical sampler
+
+
+def test_categories_from_the_prompt_file_match_the_selection(tmp_path):
+    import score_with_torch as st
+    p = tmp_path / "p.jsonl"
+    rows = [{"prompt": f"e{i}", "category": "english"} for i in range(3)] + [{"prompt": f"c{i}", "category": "code"} for i in range(3)]
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    assert st.categories_from_prompt_file(p, 4, balanced=True) == ["english", "code", "english", "code"]
+    assert st.categories_from_prompt_file(p, 4, balanced=False) == ["english", "english", "english", "code"]
+
+
+def test_g10_note_has_a_category_table_when_the_run_has_one(tmp_path):
+    import make_g10_note as g
+    d = _llama_dir(tmp_path)
+    t = _torch_ref()
+    cat = {"outside": 0.2, "k3": 0.01, "top1_agreement": 0.9}
+    t["formats"][1]["by_category"] = {"code": dict(cat), "indic": {**cat, "outside": 0.3}}
+    ns = argparse.Namespace(model="toy", notebook_version="v9", pr_this="a", pr_baseline="b", hardware="Kaggle T4 x2", prompt_note="")
+    md = g.render(g.load_llama(d), t, ns)
+    assert "## By prompt category" in md and "code: outside / k3 / top-1" in md and "30.00% / 0.0100 / 90.00%" in md
+    assert "## By prompt category" not in g.render(g.load_llama(d), _torch_ref(), ns)
