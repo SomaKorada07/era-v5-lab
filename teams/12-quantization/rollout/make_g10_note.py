@@ -65,6 +65,19 @@ def render(llama: dict, torch_ref: dict, a) -> str:
         lines.append(f"| `{f['format']}` | **{pct(f['outside'])}** ({pct(f['below'])} / {pct(f['above'])}) | {ci(c['outside'], pct)} | "
                      f"{q[0]:.3g} / {q[1]:.3g} / {q[2]:.3g} | **{f['k3']:.4f}** | {ci(c['k3'], lambda v: f'{v:.4f}')} | "
                      f"{pct(f['top1_agreement'])} {ci(c['top1_agreement'], pct)} | {'-' if tps is None else f'{tps:.1f}'} | {ratio} |")
+    if any("by_category" in f for f in torch_ref["formats"]):
+        cats = sorted({c for f in torch_ref["formats"] if "by_category" in f for c in f["by_category"]})
+        lines += ["", "## By prompt category (PyTorch reference; prompts per category in the header; intervals resample the prompts of that category)", "",
+                  "| Format | " + " | ".join(f"{c}: outside / k3 / top-1" for c in cats) + " |", "|---|" + "---|" * len(cats)]
+        for f in torch_ref["formats"]:
+            if "by_category" not in f:
+                continue
+            cells = []
+            for c in cats:
+                r = f["by_category"].get(c)
+                cells.append("-" if not r else f"{pct(r['outside'])} / {r['k3']:.4f} / {pct(r['top1_agreement'])}")
+            lines.append(f"| `{f['format']}` | " + " | ".join(cells) + " |")
+        lines += ["", "Each category has few prompts (10 at a balanced 50), so these cells are noisier than the pooled table; the intervals are in `torch_reference.json` (`by_category`)."]
     lines += ["", "**Reading the table**"]
     if "bf16" in order:
         b = next(f for f in torch_ref["formats"] if f["format"] == "bf16")
